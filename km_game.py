@@ -369,6 +369,65 @@ def alphabeta_search(game, state):
 
     return max_value(state, -infinity, +infinity)
 
+###UPDATE 3: ATTEMPT AT A MONTE CARLO TREE SEARCH###
+#Using what I learned online, best approach is to create a node class, and also to use a method
+#called Upper Confidence Bound for Trees to determine when to stop exploring and to make a decision (exploitation)
+#As a result, I'm going to implement that
+
+class Node:
+    def __init__ (self, state, parent = None, action = None):
+        self.state = state
+        self.parent = parent
+        self.children = []
+        self.visits = 0
+        self.value = 0
+        self.action = action
+
+def monte_carlo_tree_search(game, state, iterations=100):
+    root = Node(state)
+
+    for _ in range(iterations):
+        node = root
+        # Selection phase
+        while not game.is_terminal(node.state) and node.children:
+            node = select_child(node)
+
+        # Expansion phase
+        if not game.is_terminal(node.state):
+            action = random.choice(game.actions(node.state))
+            new_state = game.result(node.state, action)
+            node.children.append(Node(new_state, parent=node, action = action))
+            node = node.children[-1]
+
+        # Simulation phase
+        simulation_result = simulate(game, node.state)
+
+        # Backpropagation phase
+        backpropagate(node, simulation_result)
+
+    best_child = max(root.children, key=lambda child: child.visits)
+    return best_child.state
+
+def select_child(node):
+    # Use UCT
+    exploration_weight = 1.4
+    return max(node.children, key=lambda child: child.value / (child.visits + 1e-6) + exploration_weight * math.sqrt(math.log(node.visits + 1) / (child.visits + 1e-6)))
+
+def simulate(game, state):
+    # Simulate a random game from the current state
+    while not game.is_terminal(state):
+        action = random.choice(game.actions(state))
+        state = game.result(state, action)
+    return game.utility(state, state.to_move)
+
+def backpropagate(node, result):
+    # Update visit count and value along the path to the root
+    while node:
+        node.visits += 1
+        node.value += result
+        node = node.parent
+
+
 
 def random_player(game, state): return random.choice(list(game.actions(state)))
 
@@ -393,7 +452,7 @@ def human_player(game, state):
     return list(game.actions(state))[int(move) - 1]
 
 def main():
-    print("Player options: \n 1. Random Moves \n 2. Mini-Max Search \n 3. Alpha-Beta Search \n 4. Human Player")
+    print("Player options: \n 1. Random Moves \n 2. Mini-Max Search \n 3. Alpha-Beta Search \n 4. Monte Carlo Tree Search\n 5. Human Player")
         
     player1input = input("Choose the number for Player 1: ")
     player2input = input("Choose the number for Player 2: ")
@@ -402,7 +461,8 @@ def main():
         '1': random_player,
         '2': player(minimax_search),
         '3': player(alphabeta_search),
-        '4': human_player,
+        '4': player(monte_carlo_tree_search),
+        '5': human_player,
     }#TO keep the UI thing working, add a one player option that if selected just gets rid of the second input and runs a completely different play_game and human function
     
     result = play_game(KnightMoves(nr = 4, nc = 4), \
