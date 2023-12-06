@@ -6,10 +6,9 @@ import math
 import functools
 import itertools
 import time
-
-#This file will initially house the actual gameplay of the game
-#It's purposes may be expanded if storing the whole project on one file
-#ends up making sense
+from math import sqrt, log
+import csv
+import numpy as np
 
 #Code from Assigment 3 utilized for efficiency from Professor Flynn
 #As well as it's original state from AIMA
@@ -239,7 +238,8 @@ class KnightMoves(Game):
         if iold >= 0: bl[iold]='B'  # only after first turn
         bl[inew]=p
         b = ''.join(bl)
-        gs = GameState(board=b,to_move=str(3-int(p)))
+        next_player = '1' if p == '2' else '2'
+        gs = GameState(board=b,to_move=next_player)
         #print("=Action consideration=")
         #print("in state {0}".format(state))
         #print("proposed action {0}".format(move))
@@ -267,10 +267,13 @@ class KnightMoves(Game):
         if ((player=='1') and (nm[0]>nm[1])) or ((player=='2') and (nm[1]>nm[0])):
             u = lsm
         elif nm[0]==nm[1]:
-            u = -lsm #THis could be a logic error be wary in future
+            if (player == '1'):
+                u = -lsm
+            else:
+                u = lsm
         else:
             u = -lsm
-        p#rint(f"U: returning u={u}")
+        #print(f"U: returning u={u}")
         return u
 
     def terminal_test(self, state):
@@ -299,10 +302,11 @@ def play_game(game, strategies: dict, verbose=False):
             print('Player', player, 'move:', move)
             print(game.prettyboard(state.board))
     uf = game.utility(state,'1')
+    #uf = game.utility(state, player)
     if verbose:
         print('End-of-game state')
         game.display(state)
-        print('End-of-game utility: {0}'.format(uf))
+        #print('End-of-game utility: {0}'.format(uf))
     return state,uf
 
 
@@ -366,76 +370,81 @@ def alphabeta_search(game, state):
             if v <= alpha:
                 return v, move
         return v, move
-
+    #print (max_value(state, -infinity, +infinity))
     return max_value(state, -infinity, +infinity)
 
-###UPDATE 3: ATTEMPT AT A MONTE CARLO TREE SEARCH###
+###UPDATE 3: ATTEMPT AT A MONTE CARLO TREE SEARCH### UPDATE 4: SUCCESS AT A MCTS
 #Using what I learned online, best approach is to create a node class, and also to use a method
 #called Upper Confidence Bound for Trees to determine when to stop exploring and to make a decision (exploitation)
 #As a result, I'm going to implement that
 
 class Node:
-    def __init__ (self, state, parent = None, action = None):
+    def __init__(self, state, parent=None):
         self.state = state
         self.parent = parent
         self.children = []
         self.visits = 0
-        self.value = 0
-        self.action = action
+        self.utility = 0
 
-def monte_carlo_tree_search(game, state, iterations=100):
+
+def monte_carlo_tree_search(game, state, iterations = 50, eweight = 1.4):
     root = Node(state)
 
-    for _ in range(iterations):
-        node = root
-        # Selection phase
-        while not game.is_terminal(node.state) and node.children:
-            node = select_child(node)
+    def select(node):
+        if not node.children:
+            return node
 
-        # Expansion phase
-        if not game.is_terminal(node.state):
-            action = random.choice(game.actions(node.state))
+        log_total = log(sum(child.visits for child in node.children))
+        #score = lambda child: child.utility / child.visits + 1.4 * sqrt(log_total / child.visits)
+        score = lambda child: (child.utility / max(1,child.visits) + eweight * sqrt(log_total / max(1, child.visits)))
+        return max(node.children, key=score)
+
+    def expand(node):
+        actions = game.actions(node.state)
+        for action in actions:
             new_state = game.result(node.state, action)
-            node.children.append(Node(new_state, parent=node, action = action))
-            node = node.children[-1]
+            new_node = Node(new_state, parent=node)
+            node.children.append(new_node)
+        return node.children[0] if node.children else node
 
-        # Simulation phase
-        simulation_result = simulate(game, node.state)
+    def simulate(node): #Currently just executes random simulation
+        simulation_state = node.state
+        while not game.is_terminal(simulation_state):
+            action = random.choice(game.actions(simulation_state))
+            simulation_state = game.result(simulation_state, action)
+        return game.utility(simulation_state, node.state.to_move)
 
-        # Backpropagation phase
-        backpropagate(node, simulation_result)
+    def backpropagate(node, result):
+        while node is not None:
+            node.visits += 1
+            node.utility += result
+            node = node.parent
+
+    for _ in range(iterations): #The core functionality, runs X times
+        selected_node = select(root)
+        expanded_node = expand(selected_node)
+        simulation_result = simulate(expanded_node)
+        backpropagate(expanded_node, simulation_result)
 
     best_child = max(root.children, key=lambda child: child.visits)
-    return best_child.state
-
-def select_child(node):
-    # Use UCT
-    exploration_weight = 1.4
-    return max(node.children, key=lambda child: child.value / (child.visits + 1e-6) + exploration_weight * math.sqrt(math.log(node.visits + 1) / (child.visits + 1e-6)))
-
-def simulate(game, state):
-    # Simulate a random game from the current state
-    while not game.is_terminal(state):
-        action = random.choice(game.actions(state))
-        state = game.result(state, action)
-    return game.utility(state, state.to_move)
-
-def backpropagate(node, result):
-    # Update visit count and value along the path to the root
-    while node:
-        node.visits += 1
-        node.value += result
-        node = node.parent
-
+    return best_child.utility, game.actions(state)[root.children.index(best_child)]
 
 
 def random_player(game, state): return random.choice(list(game.actions(state)))
 
-def player(search_algorithm):
+def player(search_algorithm, limit = None, weight = None):
     """A game player who uses the specified search algorithm"""
-    return lambda game, state: search_algorithm(game, state)[1]
+    #Kinda a gross way to incorporate paramaterized players
+    if limit is None and weight is None:
+        return lambda game, state: search_algorithm(game, state)[1]
+    elif weight is None:
+        return lambda game, state: search_algorithm(game, state, iterations = limit)[1]
+    elif limit is None:
+        return lambda game, state: search_algorithm(game, state, eweight = weight)[1]
+    else:
+        return lambda game, state: search_algorithm(game, state, limit, weight)[1]
 
-def human_player(game, state):
+def human_player(game, state): #Text input based player
     num = 0
     actions = list(game.actions(state))
     if (game.start < 2):
@@ -452,7 +461,9 @@ def human_player(game, state):
     return list(game.actions(state))[int(move) - 1]
 
 def main():
-    print("Player options: \n 1. Random Moves \n 2. Mini-Max Search \n 3. Alpha-Beta Search \n 4. Monte Carlo Tree Search\n 5. Human Player")
+    #'''#There are three sets of these comment outs, removing the # before them allows easy switching between code functionality
+    #Player control option
+    print("Player options: \n 1. Random Moves \n 2. Mini-Max Search \n 3. Alpha-Beta Search \n 4. Easy Opponent \n 5. Medium Opponent \n 6. Hard Opponent \n 7. Human Player")
         
     player1input = input("Choose the number for Player 1: ")
     player2input = input("Choose the number for Player 2: ")
@@ -461,14 +472,18 @@ def main():
         '1': random_player,
         '2': player(minimax_search),
         '3': player(alphabeta_search),
-        '4': player(monte_carlo_tree_search),
-        '5': human_player,
-    }#TO keep the UI thing working, add a one player option that if selected just gets rid of the second input and runs a completely different play_game and human function
+        '4': player(monte_carlo_tree_search, 6, 1.65),
+        '5': player(monte_carlo_tree_search, 12, 1.65),
+        '6': player(monte_carlo_tree_search, 25, 1.65),
+        '7': human_player,
+    }
     
-    result = play_game(KnightMoves(nr = 4, nc = 4), \
+    #Board size is hard coded as it likely would not need to be changed often, and requires two extra inputs per run.
+    #LOOK HERE: Change board size below by changing nr or nc
+    result = play_game(KnightMoves(nr = 6, nc = 6), \
                     {'1': player_functions[player1input], '2': player_functions[player2input]}, verbose = True)
     if result[1] == 0:
-        print('Draw')
+        print('Draw')#Should never happen
 
     elif result[1] < 0:
         print('Player 2 Wins')
@@ -476,6 +491,52 @@ def main():
         print('Player 1 Wins')
 
 
+'''#Second comment set, this one never needs commented out
+#Rapid Test Option
+#This mode is highly experimental and requires code tweaking to be used properly. 
+#As it is set up when I turn it in, it'll generate a CSV file for the most important graph of the report.
+
+    csv_filename = 'results.csv'
+    csv_file = open(csv_filename, 'w', newline='')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(['Limit', 'Win Percentage'])
+
+    #For noninteger step sizes, such as testing weights. Used for the first for loop.
+    start = 1
+    end = 2
+    step = 0.025
+    values = np.arange(start, end + step, step)
+
+    
+    for limit in range(1,200,5): #This iterates through different paramater settings, can be changed to iterate others
+        p1w = 0
+        p2w = 0
+        print("Limit testing " + str(limit))
+        for i in range(100): #This runs trials per setting
+            #print("Running simulation " + str(i))
+            result = play_game(KnightMoves(nr = 8, nc = 8), \
+                        {'1': random_player, '2': player(monte_carlo_tree_search,limit)}, verbose = False)
+            if result[1] == 0:
+                print("A tie happened somehow")
+            elif result [1] < 0:
+                p2w = p2w + 1
+                #print('Player 2 wins')
+            else:
+                p1w = p1w + 1
+                #print('Player 1 wins')
+
+        #print('Player 1 wins: ' + str(p1w))
+        #print('Player 2 wins: ' + str(p2w))
+        win_percentage = (p2w / (p1w + p2w)) * 100
+
+        csv_writer.writerow([limit, win_percentage])
+        csv_file.flush()
+
+    
+
+    #print(f"Player one won {p1w} times and player two won {p2w} times.")
+
+'''#Comment this out if you want the second mode
 
 if __name__ == "__main__":
     main()
